@@ -433,6 +433,17 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.route("/debug")
+def debug():
+    key = os.environ.get("GEMINI_API_KEY", "")
+    return jsonify({
+        "key_set": bool(key),
+        "key_length": len(key),
+        "key_prefix": key[:4] if key else None,
+        "env_vars_count": len(os.environ),
+    })
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
     print(f"Starting on port {port}")
