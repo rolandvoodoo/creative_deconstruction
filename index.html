@@ -90,13 +90,10 @@
   <div id="result" class="result" style="display:none"></div>
 </div>
 
-<script type="module">
-import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/+esm';
-import { toBlobURL, fetchFile } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm';
-
+<script>
 const BACKEND = "https://creativedeconstruction-production.up.railway.app";
 const TARGET_MAX_MB = 18;
-const FFMPEG_BASE_URL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/umd';
+const MAX_DIMENSION = 720;
 
 const dropZone = document.getElementById("dropZone");
 const fileInput = document.getElementById("fileInput");
@@ -111,10 +108,7 @@ const progressFill = document.getElementById("progressFill");
 const progressLabel = document.getElementById("progressLabel");
 
 let selectedFile = null;
-let ffmpeg = null;
-let ffmpegLoading = null;
 
-// --- File selection ---
 function setFile(file) {
   if (!file) return;
   selectedFile = file;
@@ -146,82 +140,104 @@ dropZone.addEventListener("drop", (e) => {
 });
 ["dragover", "drop"].forEach(evt => window.addEventListener(evt, (e) => e.preventDefault()));
 
-// --- FFmpeg loading ---
-async function ensureFfmpeg() {
-  if (ffmpeg) return ffmpeg;
-  if (ffmpegLoading) return ffmpegLoading;
+// --- Compression via MediaRecorder ---
+async function compressVideo(file, onProgress) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const video = document.createElement("video");
+      video.muted = false;
+      video.playsInline = true;
+      video.src = URL.createObjectURL(file);
 
-  ffmpegLoading = (async () => {
-    setProgress(0, "Loading compressor (first time only)…");
-    const instance = new FFmpeg();
-    await instance.load({
-      coreURL: await toBlobURL(`${FFMPEG_BASE_URL}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${FFMPEG_BASE_URL}/ffmpeg-core.wasm`, 'application/wasm'),
-      workerURL: await toBlobURL(`${FFMPEG_BASE_URL}/ffmpeg-core.worker.js`, 'text/javascript'),
-    });
-    ffmpeg = instance;
-    return instance;
-  })();
-  return ffmpegLoading;
-}
+      await new Promise((res, rej) => {
+        video.onloadedmetadata = res;
+        video.onerror = () => rej(new Error("Could not read video metadata"));
+      });
 
-// --- Compression ---
-async function compressVideo(file) {
-  const ff = await ensureFfmpeg();
+      const duration = video.duration;
+      const { videoWidth: vw, videoHeight: vh } = video;
+      const scale = Math.min(1, MAX_DIMENSION / Math.max(vw, vh));
+      const w = Math.round(vw * scale / 2) * 2;
+      const h = Math.round(vh * scale / 2) * 2;
 
-  // Calculate target bitrate based on file duration
-  // We aim for ~18MB output. Audio @ 96k = ~12kB/s. Rest for video.
-  // Heuristic: we need video duration. Get it via a temporary <video> element.
-  const duration = await getVideoDuration(file);
-  const targetSizeKb = TARGET_MAX_MB * 1024;
-  const audioBitrateKb = 96;
-  const videoBitrateKb = Math.max(200, Math.floor((targetSizeKb * 8 / duration) - audioBitrateKb));
+      // Target bitrate to hit ~TARGET_MAX_MB
+      const targetBits = TARGET_MAX_MB * 1024 * 1024 * 8;
+      const videoBitrate = Math.max(400_000, Math.floor(targetBits / duration) - 128_000);
 
-  const inputName = 'input' + (file.name.match(/\.[^.]+$/)?.[0] || '.mp4');
-  const outputName = 'output.mp4';
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
 
-  await ff.writeFile(inputName, await fetchFile(file));
+      const canvasStream = canvas.captureStream(30);
 
-  ff.on('progress', ({ progress }) => {
-    const pct = Math.max(0, Math.min(100, progress * 100));
-    setProgress(pct, `Compressing… ${pct.toFixed(0)}%`);
+      // Capture audio from video element
+      let audioTrack = null;
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = audioCtx.createMediaElementSource(video);
+        const dest = audioCtx.createMediaStreamDestination();
+        source.connect(dest);
+        source.connect(audioCtx.destination);
+        audioTrack = dest.stream.getAudioTracks()[0];
+        if (audioTrack) canvasStream.addTrack(audioTrack);
+      } catch (e) {
+        console.warn("Could not capture audio:", e);
+      }
+
+      // Pick best supported mime
+      const mimeOptions = [
+        "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+        "video/mp4",
+        "video/webm;codecs=vp9,opus",
+        "video/webm;codecs=vp8,opus",
+        "video/webm",
+      ];
+      const mimeType = mimeOptions.find(m => MediaRecorder.isTypeSupported(m)) || "video/webm";
+
+      const recorder = new MediaRecorder(canvasStream, {
+        mimeType,
+        videoBitsPerSecond: videoBitrate,
+        audioBitsPerSecond: 128_000,
+      });
+
+      const chunks = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.onerror = (e) => reject(e.error || new Error("Recorder error"));
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: mimeType });
+        URL.revokeObjectURL(video.src);
+        resolve({ blob, mimeType, duration });
+      };
+
+      video.muted = true; // avoid audible playback to user
+      video.currentTime = 0;
+
+      const drawLoop = () => {
+        if (video.paused || video.ended) return;
+        ctx.drawImage(video, 0, 0, w, h);
+        if (onProgress && duration > 0) {
+          onProgress(Math.min(100, (video.currentTime / duration) * 100));
+        }
+        requestAnimationFrame(drawLoop);
+      };
+
+      video.onplay = () => {
+        drawLoop();
+      };
+      video.onended = () => {
+        if (recorder.state !== "inactive") recorder.stop();
+      };
+
+      recorder.start(1000);
+      await video.play();
+    } catch (err) {
+      reject(err);
+    }
   });
-
-  // Scale to max 720px on longest side, h264, target bitrate
-  await ff.exec([
-    '-i', inputName,
-    '-vf', "scale='if(gt(iw,ih),min(720,iw),-2)':'if(gt(ih,iw),min(720,ih),-2)'",
-    '-c:v', 'libx264',
-    '-preset', 'veryfast',
-    '-b:v', `${videoBitrateKb}k`,
-    '-c:a', 'aac',
-    '-b:a', `${audioBitrateKb}k`,
-    '-movflags', '+faststart',
-    '-y',
-    outputName
-  ]);
-
-  const data = await ff.readFile(outputName);
-  await ff.deleteFile(inputName);
-  await ff.deleteFile(outputName);
-
-  return new Blob([data.buffer], { type: 'video/mp4' });
 }
 
-function getVideoDuration(file) {
-  return new Promise((resolve, reject) => {
-    const v = document.createElement('video');
-    v.preload = 'metadata';
-    v.onloadedmetadata = () => {
-      resolve(v.duration || 30);
-      URL.revokeObjectURL(v.src);
-    };
-    v.onerror = () => resolve(30);
-    v.src = URL.createObjectURL(file);
-  });
-}
-
-// --- Analyze ---
+// --- Analyze flow ---
 analyzeBtn.addEventListener("click", analyze);
 
 async function analyze() {
@@ -232,8 +248,6 @@ async function analyze() {
   resultEl.style.display = "none";
   showProgress();
 
-  btnLabel.innerHTML = '<span class="spinner"></span> Preparing…';
-
   try {
     const originalSizeMb = selectedFile.size / 1024 / 1024;
     let fileToSend = selectedFile;
@@ -241,20 +255,22 @@ async function analyze() {
 
     if (originalSizeMb > TARGET_MAX_MB) {
       btnLabel.innerHTML = '<span class="spinner"></span> Compressing…';
-      const compressedBlob = await compressVideo(selectedFile);
-      const compressedMb = compressedBlob.size / 1024 / 1024;
-      fileToSend = new File([compressedBlob], fileName.replace(/\.[^.]+$/, '') + '_compressed.mp4', { type: 'video/mp4' });
-      setProgress(100, `Compressed ${originalSizeMb.toFixed(1)}MB → ${compressedMb.toFixed(1)}MB`);
-    } else {
-      setProgress(100, 'No compression needed');
+      setProgress(0, "Compressing video in browser…");
+
+      const { blob, mimeType } = await compressVideo(selectedFile, (pct) => {
+        setProgress(pct, `Compressing… ${pct.toFixed(0)}%`);
+      });
+
+      const ext = mimeType.includes("mp4") ? ".mp4" : ".webm";
+      const compressedSize = blob.size / 1024 / 1024;
+      fileToSend = new File([blob], fileName.replace(/\.[^.]+$/, '') + '_compressed' + ext, { type: mimeType });
+      setProgress(100, `Compressed ${originalSizeMb.toFixed(1)}MB → ${compressedSize.toFixed(1)}MB`);
     }
 
-    // Upload + analyze
     btnLabel.innerHTML = '<span class="spinner"></span> Uploading…';
     setProgress(0, 'Uploading to server…');
 
     const data = await uploadAndAnalyze(fileToSend);
-
     setProgress(100, 'Done');
     renderResult(data);
   } catch (e) {
@@ -284,11 +300,8 @@ function uploadAndAnalyze(file) {
       if (xhr.status >= 200 && xhr.status < 300) {
         setProgress(100, 'Analyzing video + audio on server…');
         btnLabel.innerHTML = '<span class="spinner"></span> Analyzing…';
-        try {
-          resolve(JSON.parse(xhr.responseText));
-        } catch {
-          reject(new Error("Invalid response from server"));
-        }
+        try { resolve(JSON.parse(xhr.responseText)); }
+        catch { reject(new Error("Invalid response from server")); }
       } else {
         let msg = `Server error (${xhr.status})`;
         try { const err = JSON.parse(xhr.responseText); if (err.error) msg = err.error; } catch {}
@@ -296,23 +309,21 @@ function uploadAndAnalyze(file) {
       }
     });
 
-    xhr.addEventListener("error", () => reject(new Error("Network error — check connection or Railway status.")));
+    xhr.addEventListener("error", () => reject(new Error("Network error.")));
     xhr.addEventListener("timeout", () => reject(new Error("Request timed out.")));
 
     xhr.open("POST", `${BACKEND}/analyze`);
-    xhr.timeout = 10 * 60 * 1000; // 10 min
+    xhr.timeout = 10 * 60 * 1000;
     xhr.send(fd);
   });
 }
 
-// --- UI helpers ---
 function showProgress() { progressWrap.style.display = "block"; }
 function hideProgress() { progressWrap.style.display = "none"; }
 function setProgress(pct, label) {
   progressFill.style.width = pct + "%";
   progressLabel.textContent = label;
 }
-
 function showError(msg) { errorEl.textContent = msg; errorEl.style.display = "block"; }
 function hideError() { errorEl.style.display = "none"; }
 
