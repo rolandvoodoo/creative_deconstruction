@@ -53,11 +53,6 @@
 <div class="container">
   <p class="label">Voodoo UA — Creative Deconstruction</p>
 
-  <div class="backend-row">
-    <span style="font-size:12px;color:#888;white-space:nowrap;flex-shrink:0;">Backend URL</span>
-    <input type="text" id="backendUrl" placeholder="https://your-app.railway.app" style="flex:1;min-width:0;padding:8px 12px;border:0.5px solid #ccc;border-radius:8px;font-size:13px;font-family:inherit;" />
-  </div>
-
   <div class="upload-zone" id="zone" onclick="fileInput.click()" style="cursor:pointer;">
     <input type="file" id="fileInput" accept="video/*" style="display:none">
     <strong id="zone-title">Drop your MP4 here</strong>
@@ -118,8 +113,7 @@ zone.addEventListener("drop", e => {
 
 async function analyze() {
   if (!selectedFile) return;
-  const backend = (backendInput.value || "").trim().replace(/\/$/, "");
-  if (!backend) { showError("Enter your Railway backend URL above."); return; }
+  const backend = BACKEND;
 
   analyzeBtn.disabled = true;
   errorEl.style.display = "none";
