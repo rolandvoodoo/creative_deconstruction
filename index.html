@@ -11,13 +11,9 @@
     .label { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: #888; margin-bottom: 16px; }
 
     .drop-zone {
-      border: 1.5px dashed #ccc;
-      border-radius: 12px;
-      padding: 48px 24px;
-      text-align: center;
-      cursor: pointer;
-      background: #fff;
-      transition: border-color 0.15s, background 0.15s;
+      border: 1.5px dashed #ccc; border-radius: 12px;
+      padding: 48px 24px; text-align: center; cursor: pointer;
+      background: #fff; transition: border-color 0.15s, background 0.15s;
     }
     .drop-zone:hover { border-color: #888; background: #fafafa; }
     .drop-zone.drag { border-color: #4caf50; background: #f0faf0; border-style: solid; }
@@ -33,10 +29,15 @@
     }
     .btn:disabled { opacity: 0.35; cursor: not-allowed; }
     .btn:hover:not(:disabled) { opacity: 0.85; }
-    .btn-row { margin-top: 16px; }
+    .btn-row { margin-top: 16px; display: flex; align-items: center; gap: 12px; }
 
     .spinner { width: 14px; height: 14px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    .progress-wrap { flex: 1; max-width: 320px; }
+    .progress-bar { width: 100%; height: 4px; background: #e0e0e0; border-radius: 2px; overflow: hidden; }
+    .progress-bar-fill { height: 100%; background: #1a1a1a; width: 0%; transition: width 0.3s; }
+    .progress-label { font-size: 11px; color: #666; margin-top: 6px; }
 
     .result { margin-top: 32px; background: #fff; border: 0.5px solid #e0e0e0; border-radius: 12px; overflow: hidden; }
     .result-header { padding: 20px 24px; border-bottom: 0.5px solid #eee; }
@@ -79,14 +80,22 @@
     <button class="btn" id="analyzeBtn" disabled>
       <span id="btnLabel">Analyze</span>
     </button>
+    <div class="progress-wrap" id="progressWrap" style="display:none;">
+      <div class="progress-bar"><div class="progress-bar-fill" id="progressFill"></div></div>
+      <div class="progress-label" id="progressLabel">—</div>
+    </div>
   </div>
 
   <div id="error" class="msg error" style="display:none"></div>
   <div id="result" class="result" style="display:none"></div>
 </div>
 
-<script>
+<script type="module">
+import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/+esm';
+import { toBlobURL, fetchFile } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm';
+
 const BACKEND = "https://creativedeconstruction-production.up.railway.app";
+const TARGET_MAX_MB = 18;
 
 const dropZone = document.getElementById("dropZone");
 const fileInput = document.getElementById("fileInput");
@@ -96,8 +105,13 @@ const analyzeBtn = document.getElementById("analyzeBtn");
 const btnLabel = document.getElementById("btnLabel");
 const errorEl = document.getElementById("error");
 const resultEl = document.getElementById("result");
+const progressWrap = document.getElementById("progressWrap");
+const progressFill = document.getElementById("progressFill");
+const progressLabel = document.getElementById("progressLabel");
 
 let selectedFile = null;
+let ffmpeg = null;
+let ffmpegLoading = null;
 
 // --- File selection ---
 function setFile(file) {
@@ -112,48 +126,99 @@ function setFile(file) {
 }
 
 dropZone.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", (e) => { if (e.target.files[0]) setFile(e.target.files[0]); });
 
-fileInput.addEventListener("change", (e) => {
-  const f = e.target.files[0];
-  if (f) setFile(f);
-});
-
-// --- Drag and drop ---
 ["dragenter", "dragover"].forEach(evt => {
-  dropZone.addEventListener(evt, (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dropZone.classList.add("drag");
-  });
+  dropZone.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.add("drag"); });
 });
-
 ["dragleave", "dragend"].forEach(evt => {
-  dropZone.addEventListener(evt, (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dropZone.classList.remove("drag");
-  });
+  dropZone.addEventListener(evt, (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.remove("drag"); });
 });
-
 dropZone.addEventListener("drop", (e) => {
-  e.preventDefault();
-  e.stopPropagation();
+  e.preventDefault(); e.stopPropagation();
   dropZone.classList.remove("drag");
-  const files = e.dataTransfer?.files;
-  if (files && files.length > 0) {
-    const f = files[0];
-    if (f.type.startsWith("video/") || f.name.toLowerCase().endsWith(".mp4") || f.name.toLowerCase().endsWith(".mov")) {
-      setFile(f);
-    } else {
-      showError("Please drop a video file (MP4 or MOV).");
-    }
+  const f = e.dataTransfer?.files?.[0];
+  if (f) {
+    if (f.type.startsWith("video/") || /\.(mp4|mov|webm|m4v)$/i.test(f.name)) setFile(f);
+    else showError("Please drop a video file.");
   }
 });
+["dragover", "drop"].forEach(evt => window.addEventListener(evt, (e) => e.preventDefault()));
 
-// Prevent browser from opening the file when dropped outside the zone
-["dragover", "drop"].forEach(evt => {
-  window.addEventListener(evt, (e) => e.preventDefault());
-});
+// --- FFmpeg loading ---
+async function ensureFfmpeg() {
+  if (ffmpeg) return ffmpeg;
+  if (ffmpegLoading) return ffmpegLoading;
+
+  ffmpegLoading = (async () => {
+    setProgress(0, "Loading compressor…");
+    const instance = new FFmpeg();
+    const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
+    await instance.load({
+      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+    });
+    ffmpeg = instance;
+    return instance;
+  })();
+  return ffmpegLoading;
+}
+
+// --- Compression ---
+async function compressVideo(file) {
+  const ff = await ensureFfmpeg();
+
+  // Calculate target bitrate based on file duration
+  // We aim for ~18MB output. Audio @ 96k = ~12kB/s. Rest for video.
+  // Heuristic: we need video duration. Get it via a temporary <video> element.
+  const duration = await getVideoDuration(file);
+  const targetSizeKb = TARGET_MAX_MB * 1024;
+  const audioBitrateKb = 96;
+  const videoBitrateKb = Math.max(200, Math.floor((targetSizeKb * 8 / duration) - audioBitrateKb));
+
+  const inputName = 'input' + (file.name.match(/\.[^.]+$/)?.[0] || '.mp4');
+  const outputName = 'output.mp4';
+
+  await ff.writeFile(inputName, await fetchFile(file));
+
+  ff.on('progress', ({ progress }) => {
+    const pct = Math.max(0, Math.min(100, progress * 100));
+    setProgress(pct, `Compressing… ${pct.toFixed(0)}%`);
+  });
+
+  // Scale to max 720px on longest side, h264, target bitrate
+  await ff.exec([
+    '-i', inputName,
+    '-vf', "scale='if(gt(iw,ih),min(720,iw),-2)':'if(gt(ih,iw),min(720,ih),-2)'",
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    '-b:v', `${videoBitrateKb}k`,
+    '-c:a', 'aac',
+    '-b:a', `${audioBitrateKb}k`,
+    '-movflags', '+faststart',
+    '-y',
+    outputName
+  ]);
+
+  const data = await ff.readFile(outputName);
+  await ff.deleteFile(inputName);
+  await ff.deleteFile(outputName);
+
+  return new Blob([data.buffer], { type: 'video/mp4' });
+}
+
+function getVideoDuration(file) {
+  return new Promise((resolve, reject) => {
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.onloadedmetadata = () => {
+      resolve(v.duration || 30);
+      URL.revokeObjectURL(v.src);
+    };
+    v.onerror = () => resolve(30);
+    v.src = URL.createObjectURL(file);
+  });
+}
 
 // --- Analyze ---
 analyzeBtn.addEventListener("click", analyze);
@@ -164,69 +229,96 @@ async function analyze() {
   analyzeBtn.disabled = true;
   hideError();
   resultEl.style.display = "none";
+  showProgress();
 
-  const steps = [
-    "Uploading to Gemini…",
-    "Analyzing video + audio…",
-    "Extracting frames…",
-    "Building report…"
-  ];
-  let stepIdx = 0;
-  btnLabel.innerHTML = '<span class="spinner"></span> ' + steps[0];
-  const ticker = setInterval(() => {
-    stepIdx = Math.min(stepIdx + 1, steps.length - 1);
-    btnLabel.innerHTML = '<span class="spinner"></span> ' + steps[stepIdx];
-  }, 10000);
+  btnLabel.innerHTML = '<span class="spinner"></span> Preparing…';
 
   try {
-    const fd = new FormData();
-    fd.append("video", selectedFile);
+    const originalSizeMb = selectedFile.size / 1024 / 1024;
+    let fileToSend = selectedFile;
+    let fileName = selectedFile.name;
 
-    const resp = await fetch(`${BACKEND}/analyze`, {
-      method: "POST",
-      body: fd
-    });
-
-    clearInterval(ticker);
-
-    if (!resp.ok) {
-      let msg = `Server error (${resp.status})`;
-      try {
-        const err = await resp.json();
-        if (err.error) msg = err.error;
-      } catch {}
-      throw new Error(msg);
+    if (originalSizeMb > TARGET_MAX_MB) {
+      btnLabel.innerHTML = '<span class="spinner"></span> Compressing…';
+      const compressedBlob = await compressVideo(selectedFile);
+      const compressedMb = compressedBlob.size / 1024 / 1024;
+      fileToSend = new File([compressedBlob], fileName.replace(/\.[^.]+$/, '') + '_compressed.mp4', { type: 'video/mp4' });
+      setProgress(100, `Compressed ${originalSizeMb.toFixed(1)}MB → ${compressedMb.toFixed(1)}MB`);
+    } else {
+      setProgress(100, 'No compression needed');
     }
 
-    const data = await resp.json();
+    // Upload + analyze
+    btnLabel.innerHTML = '<span class="spinner"></span> Uploading…';
+    setProgress(0, 'Uploading to server…');
+
+    const data = await uploadAndAnalyze(fileToSend);
+
+    setProgress(100, 'Done');
     renderResult(data);
   } catch (e) {
-    clearInterval(ticker);
+    console.error(e);
     showError(e.message || "Something went wrong.");
+    hideProgress();
   }
 
   btnLabel.textContent = "Analyze";
   analyzeBtn.disabled = false;
 }
 
-function showError(msg) {
-  errorEl.textContent = msg;
-  errorEl.style.display = "block";
+function uploadAndAnalyze(file) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const fd = new FormData();
+    fd.append("video", file);
+
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable) {
+        const pct = (e.loaded / e.total) * 100;
+        setProgress(pct, `Uploading… ${pct.toFixed(0)}%`);
+      }
+    });
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setProgress(100, 'Analyzing video + audio on server…');
+        btnLabel.innerHTML = '<span class="spinner"></span> Analyzing…';
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch {
+          reject(new Error("Invalid response from server"));
+        }
+      } else {
+        let msg = `Server error (${xhr.status})`;
+        try { const err = JSON.parse(xhr.responseText); if (err.error) msg = err.error; } catch {}
+        reject(new Error(msg));
+      }
+    });
+
+    xhr.addEventListener("error", () => reject(new Error("Network error — check connection or Railway status.")));
+    xhr.addEventListener("timeout", () => reject(new Error("Request timed out.")));
+
+    xhr.open("POST", `${BACKEND}/analyze`);
+    xhr.timeout = 10 * 60 * 1000; // 10 min
+    xhr.send(fd);
+  });
 }
 
-function hideError() {
-  errorEl.style.display = "none";
+// --- UI helpers ---
+function showProgress() { progressWrap.style.display = "block"; }
+function hideProgress() { progressWrap.style.display = "none"; }
+function setProgress(pct, label) {
+  progressFill.style.width = pct + "%";
+  progressLabel.textContent = label;
 }
+
+function showError(msg) { errorEl.textContent = msg; errorEl.style.display = "block"; }
+function hideError() { errorEl.style.display = "none"; }
 
 function renderResult(data) {
   const rows = (data.dimensions || []).map(d => {
     const gradeClass = `grade-${(d.grade || "OK").replace(/\W/g,"") || "OK"}`;
-    return `
-      <tr>
-        <td>${escapeHtml(d.name)}</td>
-        <td class="grade ${gradeClass}">${escapeHtml(d.grade || "")}</td>
-        <td class="verdict">${escapeHtml(d.verdict || "")}</td>
-      </tr>`;
+    return `<tr><td>${escapeHtml(d.name)}</td><td class="grade ${gradeClass}">${escapeHtml(d.grade || "")}</td><td class="verdict">${escapeHtml(d.verdict || "")}</td></tr>`;
   }).join("");
 
   const strengths = (data.strengths || []).map(s => `<li>${escapeHtml(s)}</li>`).join("") || "<li>—</li>";
@@ -254,18 +346,12 @@ function renderResult(data) {
       <a href="${reportUrl}" target="_blank" rel="noopener">Open full illustrated report →</a>
       <span>timeline · frames · script</span>
     </div>`;
-
   resultEl.style.display = "block";
 }
 
 function escapeHtml(s) {
   if (s == null) return "";
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 </script>
 </body>
