@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Creative Deconstruction — Voodoo UA</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f8f8f7; color: #1a1a1a; min-height: 100vh; }
+    .container { max-width: 760px; margin: 0 auto; padding: 48px 24px; }
+    .label { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: #888; margin-bottom: 12px; }
+    .upload-zone { border: 1.5px dashed #ccc; border-radius: 12px; padding: 40px 24px; text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s; background: #fff; }
+    .upload-zone:hover, .upload-zone.drag { border-color: #555; background: #fafafa; }
+    .upload-zone.has-file { border-style: solid; border-color: #4caf50; background: #f0faf0; }
+    .upload-zone p { font-size: 14px; color: #666; margin-top: 8px; }
+    .upload-zone strong { font-size: 15px; color: #1a1a1a; }
+    input[type=file] { display: none; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 22px; border: 1px solid #333; border-radius: 8px; background: #1a1a1a; color: #fff; font-size: 14px; cursor: pointer; font-family: inherit; transition: opacity 0.2s; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn:hover:not(:disabled) { opacity: 0.85; }
+    .btn-row { display: flex; gap: 10px; margin-top: 16px; align-items: center; }
+    .spinner { width: 14px; height: 14px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .result { margin-top: 32px; background: #fff; border: 0.5px solid #e0e0e0; border-radius: 12px; overflow: hidden; }
+    .result-header { padding: 20px 24px; border-bottom: 0.5px solid #eee; }
+    .result-header h2 { font-size: 18px; font-weight: 500; margin-bottom: 6px; }
+    .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tag { font-size: 11px; padding: 2px 8px; border-radius: 5px; background: #f0f0f0; color: #555; }
+    table { width: 100%; border-collapse: collapse; }
+    th { background: #f8f8f7; text-align: left; padding: 10px 16px; font-size: 12px; color: #888; font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+    td { padding: 11px 16px; border-bottom: 0.5px solid #f0f0f0; font-size: 14px; vertical-align: top; }
+    .grade { font-weight: 600; white-space: nowrap; font-size: 12px; }
+    .grade-GOOD { color: #166534; } .grade-OK { color: #92400e; } .grade-BAD { color: #991b1b; }
+    .verdict { color: #444; line-height: 1.5; }
+    .sw { display: grid; grid-template-columns: 1fr 1fr; }
+    .sw-box { padding: 16px 20px; }
+    .sw-box:first-child { border-right: 0.5px solid #f0f0f0; }
+    .sw-box p { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
+    .sw-box ul { padding-left: 16px; }
+    .sw-box li { font-size: 13px; line-height: 1.6; margin-bottom: 4px; color: #444; }
+    .sw-box.s p { color: #166534; } .sw-box.w p { color: #991b1b; }
+    .report-link { padding: 16px 20px; border-top: 0.5px solid #eee; display: flex; align-items: center; justify-content: space-between; }
+    .report-link a { font-size: 13px; color: #1d4ed8; text-decoration: none; font-weight: 500; }
+    .report-link a:hover { text-decoration: underline; }
+    .report-link span { font-size: 12px; color: #aaa; }
+    .error { margin-top: 16px; padding: 12px 16px; background: #fff5f5; border: 0.5px solid #fca5a5; border-radius: 8px; font-size: 13px; color: #991b1b; line-height: 1.6; }
+    .backend-row { display: flex; gap: 8px; margin-bottom: 20px; align-items: center; }
+    .backend-row input { flex: 1; padding: 8px 12px; border: 0.5px solid #ccc; border-radius: 8px; font-size: 13px; font-family: inherit; }
+    .backend-row label { font-size: 12px; color: #888; white-space: nowrap; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <p class="label">Voodoo UA — Creative Deconstruction</p>
+
+  <div class="backend-row">
+    <label>Backend URL</label>
+    <input type="text" id="backendUrl" placeholder="https://your-app.railway.app" />
+  </div>
+
+  <label class="upload-zone" id="zone">
+    <input type="file" id="fileInput" accept="video/*">
+    <strong id="zone-title">Drop your MP4 here</strong>
+    <p id="zone-sub">or click to browse</p>
+  </label>
+
+  <div class="btn-row">
+    <button class="btn" id="analyzeBtn" disabled onclick="analyze()">
+      <span id="btn-label">Analyze</span>
+    </button>
+  </div>
+
+  <div id="error" style="display:none" class="error"></div>
+  <div id="result" style="display:none" class="result"></div>
+</div>
+
+<script>
+const zone = document.getElementById("zone");
+const fileInput = document.getElementById("fileInput");
+const analyzeBtn = document.getElementById("analyzeBtn");
+const btnLabel = document.getElementById("btn-label");
+const zoneTitle = document.getElementById("zone-title");
+const zoneSub = document.getElementById("zone-sub");
+const errorEl = document.getElementById("error");
+const resultEl = document.getElementById("result");
+const backendInput = document.getElementById("backendUrl");
+
+// Persist backend URL
+const savedUrl = localStorage.getItem("backendUrl");
+if (savedUrl) backendInput.value = savedUrl;
+backendInput.addEventListener("change", () => localStorage.setItem("backendUrl", backendInput.value));
+
+let selectedFile = null;
+
+fileInput.addEventListener("change", () => {
+  const f = fileInput.files[0];
+  if (!f) return;
+  selectedFile = f;
+  zoneTitle.textContent = "✓  " + f.name;
+  zoneSub.textContent = (f.size / 1024 / 1024).toFixed(1) + " MB";
+  zone.classList.add("has-file");
+  analyzeBtn.disabled = false;
+  resultEl.style.display = "none";
+  errorEl.style.display = "none";
+});
+
+zone.addEventListener("dragover", e => { e.preventDefault(); zone.classList.add("drag"); });
+zone.addEventListener("dragleave", () => zone.classList.remove("drag"));
+zone.addEventListener("drop", e => {
+  e.preventDefault();
+  zone.classList.remove("drag");
+  const f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith("video/")) {
+    fileInput.files = e.dataTransfer.files;
+    fileInput.dispatchEvent(new Event("change"));
+  }
+});
+
+async function analyze() {
+  if (!selectedFile) return;
+  const backend = (backendInput.value || "").trim().replace(/\/$/, "");
+  if (!backend) { showError("Enter your Railway backend URL above."); return; }
+
+  analyzeBtn.disabled = true;
+  errorEl.style.display = "none";
+  resultEl.style.display = "none";
+
+  const steps = ["Uploading to Gemini…", "Analyzing video + audio…", "Extracting frames…", "Building report…"];
+  let step = 0;
+  btnLabel.innerHTML = '<span class="spinner"></span> ' + steps[0];
+  const ticker = setInterval(() => {
+    step = Math.min(step + 1, steps.length - 1);
+    btnLabel.innerHTML = '<span class="spinner"></span> ' + steps[step];
+  }, 9000);
+
+  try {
+    const fd = new FormData();
+    fd.append("video", selectedFile);
+    const resp = await fetch(`${backend}/analyze`, { method: "POST", body: fd });
+    clearInterval(ticker);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: resp.statusText }));
+      throw new Error(err.error || "Server error");
+    }
+    const data = await resp.json();
+    renderResult(data, backend);
+  } catch (e) {
+    clearInterval(ticker);
+    showError(e.message);
+  }
+
+  btnLabel.textContent = "Analyze";
+  analyzeBtn.disabled = false;
+}
+
+function showError(msg) {
+  errorEl.textContent = msg;
+  errorEl.style.display = "block";
+}
+
+function renderResult(data, backend) {
+  const rows = data.dimensions.map(d => `
+    <tr>
+      <td>${d.name}</td>
+      <td class="grade grade-${d.grade}">${d.grade}</td>
+      <td class="verdict">${d.verdict}</td>
+    </tr>`).join("");
+
+  const strengths = (data.strengths || []).map(s => `<li>${s}</li>`).join("") || "<li>—</li>";
+  const weaknesses = (data.weaknesses || []).map(w => `<li>${w}</li>`).join("") || "<li>—</li>";
+  const reportUrl = `${backend}/report/${encodeURIComponent(data.report_filename)}`;
+
+  resultEl.innerHTML = `
+    <div class="result-header">
+      <h2>${data.ad_name}</h2>
+      <div class="tags">
+        <span class="tag">Video</span>
+        <span class="tag">${data.ad_type || "—"}</span>
+        <span class="tag">${data.duration ? data.duration + "s" : "—"}</span>
+      </div>
+    </div>
+    <table>
+      <tr><th>Dimension</th><th>Grade</th><th>Verdict</th></tr>
+      ${rows}
+    </table>
+    <div class="sw">
+      <div class="sw-box s"><p>Strengths</p><ul>${strengths}</ul></div>
+      <div class="sw-box w"><p>Weaknesses</p><ul>${weaknesses}</ul></div>
+    </div>
+    <div class="report-link">
+      <a href="${reportUrl}" target="_blank">Open full illustrated report →</a>
+      <span>timeline · frames · script</span>
+    </div>`;
+  resultEl.style.display = "block";
+}
+</script>
+</body>
+</html>
