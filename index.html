@@ -96,6 +96,7 @@ import { toBlobURL, fetchFile } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@
 
 const BACKEND = "https://creativedeconstruction-production.up.railway.app";
 const TARGET_MAX_MB = 18;
+const FFMPEG_BASE_URL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/umd';
 
 const dropZone = document.getElementById("dropZone");
 const fileInput = document.getElementById("fileInput");
@@ -151,12 +152,12 @@ async function ensureFfmpeg() {
   if (ffmpegLoading) return ffmpegLoading;
 
   ffmpegLoading = (async () => {
-    setProgress(0, "Loading compressor…");
+    setProgress(0, "Loading compressor (first time only)…");
     const instance = new FFmpeg();
-    const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
     await instance.load({
-      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      coreURL: await toBlobURL(`${FFMPEG_BASE_URL}/ffmpeg-core.js`, 'text/javascript'),
+      wasmURL: await toBlobURL(`${FFMPEG_BASE_URL}/ffmpeg-core.wasm`, 'application/wasm'),
+      workerURL: await toBlobURL(`${FFMPEG_BASE_URL}/ffmpeg-core.worker.js`, 'text/javascript'),
     });
     ffmpeg = instance;
     return instance;
